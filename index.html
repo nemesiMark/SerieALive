@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Serie A Live</title>
+<style>
+  :root {
+    --bg: #0b1220;
+    --card: #131c30;
+    --card-border: #223050;
+    --text: #eef2f8;
+    --muted: #8fa0be;
+    --accent: #3ddc84;
+    --live: #ff4d4f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 16px;
+  }
+  header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 20px;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+  h1 {
+    font-size: 1.5rem;
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .status-bar {
+    font-size: 0.85rem;
+    color: var(--muted);
+    text-align: center;
+    margin-bottom: 16px;
+  }
+  .refresh-btn {
+    background: var(--accent);
+    color: #08331c;
+    border: none;
+    padding: 8px 14px;
+    border-radius: 8px;
+    font-weight: 600;
+    cursor: pointer;
+    font-size: 0.85rem;
+  }
+  .refresh-btn:disabled {
+    opacity: 0.6;
+    cursor: default;
+  }
+  .matches {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+    max-width: 720px;
+    margin: 0 auto;
+  }
+  .match-card {
+    background: var(--card);
+    border: 1px solid var(--card-border);
+    border-radius: 12px;
+    padding: 14px 16px;
+    transition: box-shadow 0.3s ease;
+  }
+  .match-card.is-live {
+    border: 1px solid var(--live);
+    background: linear-gradient(180deg, rgba(255,77,79,0.10), rgba(255,77,79,0.03));
+    box-shadow: 0 0 0 1px rgba(255,77,79,0.25), 0 0 18px rgba(255,77,79,0.25);
+  }
+  .match-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .teams {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    flex: 1;
+  }
+  .team-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 1rem;
+  }
+  .team-row img {
+    width: 22px;
+    height: 22px;
+    object-fit: contain;
+  }
+  .score {
+    font-weight: 700;
+    font-size: 1.1rem;
+    min-width: 24px;
+    text-align: center;
+  }
+  .score.is-live {
+    color: var(--live);
+    font-size: 1.25rem;
+  }
+  .meta {
+    text-align: right;
+    font-size: 0.8rem;
+    color: var(--muted);
+    white-space: nowrap;
+    margin-left: 10px;
+  }
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 20px;
+    font-size: 0.72rem;
+    font-weight: 700;
+  }
+  .badge.live {
+    background: var(--live);
+    color: white;
+    animation: pulse 1.5s infinite;
+  }
+  .badge.finished {
+    background: #2a3958;
+    color: var(--muted);
+  }
+  .badge.scheduled {
+    background: #2a3958;
+    color: var(--muted);
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+  }
+  .empty, .loading, .error {
+    text-align: center;
+    color: var(--muted);
+    padding: 40px 20px;
+  }
+  .error { color: #ff8a8a; }
+  footer {
+    text-align: center;
+    margin-top: 28px;
+    padding-bottom: 20px;
+    font-size: 0.78rem;
+    color: var(--muted);
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>⚽ Serie A Live</h1>
+  <div>
+    <button class="refresh-btn" id="refreshBtn" onclick="loadMatches()">Aggiorna</button>
+  </div>
+</header>
+<div id="roundLabel" style="text-align:center; font-size:1.1rem; font-weight:700; color:var(--text); margin-bottom:4px;"></div>
+<div class="status-bar" id="statusBar"></div>
+
+<div class="matches" id="matches">
+  <div class="loading">Caricamento partite…</div>
+</div>
+
+<footer>
+  Dati forniti da <a href="https://www.thesportsdb.com/" style="color:#8fa0be;">TheSportsDB</a> (chiave gratuita di test)
+</footer>
+
+<script>
+const API_BASE = "https://www.thesportsdb.com/api/v1/json/123";
+const SERIE_A_ID = 4332; // Italian Serie A su TheSportsDB
+const AUTO_REFRESH_MS = 240000; // 4 minuti, per non sovraccaricare la chiave gratuita condivisa
+
+let refreshTimer = null;
+
+function parseEventDateTime(ev) {
+  // dateEvent: "2026-09-13", strTime: "18:00:00" (UTC)
+  const date = ev.dateEvent;
+  const time = ev.strTime || "00:00:00";
+  return new Date(`${date}T${time}Z`);
+}
+
+function computeStatus(ev) {
+  const kickoff = parseEventDateTime(ev);
+  const now = new Date();
+  const hoursSinceKickoff = (now - kickoff) / (1000 * 60 * 60);
+
+  // L'orario decide per primo: se la partita non è ancora iniziata è
+  // "programmata" a prescindere da eventuali punteggi placeholder.
+  if (hoursSinceKickoff < 0) {
+    return { text: "PROGRAMMATA", cls: "scheduled" };
+  }
+  // Tra 0 e ~2.5 ore dal fischio d'inizio consideriamo la partita in corso,
+  // anche se l'API mostra già un punteggio parziale (non è detto sia finale).
+  if (hoursSinceKickoff < 2.5) {
+    return { text: "IN CORSO", cls: "live" };
+  }
+  return { text: "FINITA", cls: "finished" };
+}
+
+function formatTime(ev) {
+  const d = parseEventDateTime(ev);
+  try {
+    return d.toLocaleString("it-IT", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+  } catch (e) {
+    return `${ev.dateEvent} ${ev.strTime || ""}`;
+  }
+}
+
+function extractEvents(data) {
+  if (!data) return [];
+  return data.events || data.results || [];
+}
+
+async function fetchEvents(endpoint) {
+  try {
+    const res = await fetch(`${API_BASE}/${endpoint}?id=${SERIE_A_ID}`);
+    if (!res.ok) return [];
+    const data = await res.json();
+    return extractEvents(data);
+  } catch (e) {
+    return [];
+  }
+}
+
+function buildMatchCard(ev) {
+  const card = document.createElement("div");
+  const st = computeStatus(ev);
+  const isLive = st.cls === "live";
+  card.className = "match-card" + (isLive ? " is-live" : "");
+
+  const homeScore = ev.intHomeScore ?? "-";
+  const awayScore = ev.intAwayScore ?? "-";
+  const scoreClass = "score" + (isLive ? " is-live" : "");
+
+  card.innerHTML = `
+    <div class="match-top">
+      <div class="teams">
+        <div class="team-row">
+          ${ev.strHomeTeamBadge ? `<img src="${ev.strHomeTeamBadge}" alt="" onerror="this.style.display='none'">` : ""}
+          <span>${ev.strHomeTeam}</span>
+          <span class="${scoreClass}">${homeScore}</span>
+        </div>
+        <div class="team-row">
+          ${ev.strAwayTeamBadge ? `<img src="${ev.strAwayTeamBadge}" alt="" onerror="this.style.display='none'">` : ""}
+          <span>${ev.strAwayTeam}</span>
+          <span class="${scoreClass}">${awayScore}</span>
+        </div>
+      </div>
+      <div class="meta">
+        <div><span class="badge ${st.cls}">${st.text}</span></div>
+        <div style="margin-top:6px;">${formatTime(ev)}</div>
+      </div>
+    </div>
+  `;
+  return card;
+}
+
+function isWithinCurrentWindow(ev) {
+  const kickoff = parseEventDateTime(ev);
+  const now = new Date();
+  const diffDays = (kickoff - now) / (1000 * 60 * 60 * 24);
+  // Finestra ampia per essere sicuri di includere l'intera giornata
+  // corrente anche se spalmata su più giorni, o in caso di rinvii.
+  return diffDays >= -10 && diffDays <= 10;
+}
+
+async function loadMatches() {
+  const btn = document.getElementById("refreshBtn");
+  const statusBar = document.getElementById("statusBar");
+  const container = document.getElementById("matches");
+  btn.disabled = true;
+  btn.textContent = "Aggiornamento…";
+
+  try {
+    const [nextEvents, pastEvents] = await Promise.all([
+      fetchEvents("eventsnextleague.php"),
+      fetchEvents("eventspastleague.php"),
+    ]);
+
+    const seen = new Map();
+    [...pastEvents, ...nextEvents].forEach(ev => {
+      if (ev && ev.idEvent) seen.set(ev.idEvent, ev);
+    });
+    let combined = Array.from(seen.values());
+
+    // Troviamo la partita più vicina ad "ora" per capire qual è la
+    // giornata corrente (numero round + stagione), poi scarichiamo quella
+    // giornata specifica per intero, senza altre competizioni mescolate.
+    let matches = combined.filter(isWithinCurrentWindow);
+    const withRoundInfo = combined.filter(ev => ev.intRound && ev.strSeason && ev.strLeague === "Italian Serie A");
+
+    if (withRoundInfo.length > 0) {
+      withRoundInfo.sort((a, b) => Math.abs(parseEventDateTime(a) - new Date()) - Math.abs(parseEventDateTime(b) - new Date()));
+      const currentRound = withRoundInfo[0].intRound;
+      const currentSeason = withRoundInfo[0].strSeason;
+      document.getElementById("roundLabel").textContent = `Giornata ${currentRound}`;
+
+      try {
+        const res = await fetch(`${API_BASE}/eventsround.php?id=${SERIE_A_ID}&r=${currentRound}&s=${currentSeason}`);
+        if (res.ok) {
+          const data = await res.json();
+          const roundMatches = extractEvents(data);
+          if (roundMatches && roundMatches.length > 0) {
+            matches = roundMatches;
+          }
+        }
+      } catch (e) {
+        // se fallisce, teniamo il risultato ottenuto da next/past sopra
+      }
+    }
+
+    container.innerHTML = "";
+    if (matches.length === 0) {
+      container.innerHTML = '<div class="empty">Nessuna partita di Serie A trovata al momento.</div>';
+    } else {
+      matches.sort((a, b) => parseEventDateTime(a) - parseEventDateTime(b));
+      matches.forEach(ev => container.appendChild(buildMatchCard(ev)));
+    }
+
+    statusBar.textContent = "Ultimo aggiornamento: " + new Date().toLocaleTimeString("it-IT");
+  } catch (err) {
+    container.innerHTML = `<div class="error">Impossibile caricare i dati (${err.message}). Riprova tra poco.</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "Aggiorna";
+  }
+}
+
+function startAutoRefresh() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(loadMatches, AUTO_REFRESH_MS);
+}
+
+loadMatches();
+startAutoRefresh();
+</script>
+
+</body>
+</html>
